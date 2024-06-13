@@ -1,0 +1,149 @@
+<# 
+script to ask the user to provide the IP address range they wish to query, and then to run the PowerShell
+commands to get the installed software on the windows systems in question.
+
+The output will be saved to a file called c:\temp\<IP ADDRESS>__YearMonthDayHourMinuteSecond.txt 
+
+The first portion contains a function named Get-RemoteProgram authored by Jaap Brasser. 
+This function polls through the registry keys to extract the required information
+and is posted on Microsoft's Technet at https://gallery.technet.microsoft.com/Get-RemoteProgram-Get-list-de9fd2b4
+
+Small modifications were needed to this code to make it work as needed for this project. 
+
+Where the code was modified from original, comment lines start with JR show any new information within the function
+#>
+
+$ErrorActionPreference= 'silentlycontinue'
+
+#the above keeps the error messages from displaying on the screen, as when an IP address is not found,it throws an error. This prevents a sea of RED from being displayed. 
+#comment the line out if you wish to see any errors in the program.
+
+Function Get-RemoteProgram {
+<#
+.Synopsis
+Generates a list of installed programs on a computer
+
+.DESCRIPTION
+This function generates a list by querying the registry and returning the installed programs of a local or remote computer.
+
+.NOTES   
+Name: Get-RemoteProgram
+Author: Jaap Brasser
+Version: 1.2.1
+DateCreated: 2013-08-23
+DateUpdated: 2015-02-28
+Blog: http://www.jaapbrasser.com
+#>
+    [CmdletBinding(SupportsShouldProcess=$true)]
+    param(
+        [Parameter(ValueFromPipeline=$true,
+            ValueFromPipelineByPropertyName=$true,
+            Position=0)]
+        [string[]]
+            $ComputerName = $env:COMPUTERNAME,
+        [Parameter(Position=0)]
+        [string[]]$Property 
+    )
+
+    begin {
+        $RegistryLocation = 'SOFTWARE\Microsoft\Windows\CurrentVersion\Uninstall\',
+                            'SOFTWARE\Wow6432Node\Microsoft\Windows\CurrentVersion\Uninstall\'
+        $HashProperty = @{}
+        #JR  original line follows
+        #$SelectProperty = @('ProgramName','ComputerName')
+        #JR  modified line follows
+         $SelectProperty = @('ProgramName','DisplayVersion')    
+         if ($Property) {
+            $SelectProperty += $Property
+        }
+    }
+
+    process {
+        foreach ($Computer in $ComputerName) {
+            $RegBase = [Microsoft.Win32.RegistryKey]::OpenRemoteBaseKey([Microsoft.Win32.RegistryHive]::LocalMachine,$Computer)
+            foreach ($CurrentReg in $RegistryLocation) {
+                if ($RegBase) {
+                    $CurrentRegKey = $RegBase.OpenSubKey($CurrentReg)
+                    if ($CurrentRegKey) {
+                        $CurrentRegKey.GetSubKeyNames() | ForEach-Object {
+                            if ($Property) {
+                                foreach ($CurrentProperty in $Property) {
+                                    $HashProperty.$CurrentProperty = ($RegBase.OpenSubKey("$CurrentReg$_")).GetValue($CurrentProperty)
+                                }
+                            }
+                            #JR commented out following line - not needed for this work
+                            #$HashProperty.ComputerName = $Computer
+                            $HashProperty.ProgramName = ($DisplayName = ($RegBase.OpenSubKey("$CurrentReg$_")).GetValue('DisplayName'))
+                            #JR added following new line as needed for this work 
+                            $HashProperty.DisplayVersion = ($DisplayVersion = ($RegBase.OpenSubKey("$CurrentReg$_")).GetValue('DisplayVersion'))
+                            
+                            if ($DisplayName) {
+                                New-Object -TypeName PSCustomObject -Property $HashProperty |
+                                Select-Object -Property $SelectProperty
+                            } 
+                        }
+                    }
+                }
+            }
+        }
+    }
+}
+
+clear-host
+#blanking the screen to make it easy to see output
+
+# Function to generate a range of IP addresses
+function Get-IPRange {
+    param(
+        [string]$startIP,
+        [string]$endIP
+    )
+
+    $start = [System.Net.IPAddress]::Parse($startIP)
+    $end = [System.Net.IPAddress]::Parse($endIP)
+
+    $startBytes = $start.GetAddressBytes()
+    [Array]::Reverse($startBytes)
+    $startInt = [BitConverter]::ToUInt32($startBytes, 0)
+
+    $endBytes = $end.GetAddressBytes()
+    [Array]::Reverse($endBytes)
+    $endInt = [BitConverter]::ToUInt32($endBytes, 0)
+
+    $ips = @()
+
+    for ($i = $startInt; $i -le $endInt; $i++) {
+        $bytes = [BitConverter]::GetBytes($i)
+        [Array]::Reverse($bytes)
+        $ip = [System.Net.IPAddress]::New($bytes)
+        $ips += $ip.ToString()
+    }
+
+    return $ips
+}
+
+# Prompt the user for the starting and ending IP addresses
+$startIP = ''
+$endIP = ''
+
+DO {
+    $startIP = Read-Host 'Input the starting IP address of the range you wish to scan (e.g., 192.168.1.1)'
+} while ($startIP -notmatch '\p{Nd}+\.\p{Nd}+\.\p{Nd}+\.\p{Nd}+')
+
+DO {
+    $endIP = Read-Host 'Input the ending IP address of the range you wish to scan (e.g., 192.168.1.254)'
+} while ($endIP -notmatch '\p{Nd}+\.\p{Nd}+\.\p{Nd}+\.\p{Nd}+')
+
+$ip_addresses = Get-IPRange -startIP $startIP -endIP $endIP
+
+$a = Get-Date
+# get date/time information
+
+$path = 'C:\temp\'
+#change the above location to where you wish to have the output files stored
+
+foreach ($ip in $ip_addresses) {
+    $filename = $path + $ip +'_'+$a.Year+$a.Month+$a.Day+$a.Hour+$a.Minute+$a.Second+'.txt'
+    Get-RemoteProgram -ComputerName $ip | Out-File $filename
+    write-host "Collection complete for $ip. File $filename written"
+}
